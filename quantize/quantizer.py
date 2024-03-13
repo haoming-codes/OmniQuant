@@ -7,9 +7,46 @@ import numpy as np
 import pdb
 import math
 
+
 CLIPMIN = 1e-5
 
+def soft_round(x, alpha, eps=1e-3):
+    """Differentiable approximation to `round`.
 
+    Larger alphas correspond to closer approximations of the round function.
+    If alpha is close to zero, this function reduces to the identity.
+
+    This is described in Sec. 4.1. in the paper
+    > "Universally Quantized Neural Compression"<br />
+    > Eirikur Agustsson & Lucas Theis<br />
+    > https://arxiv.org/abs/2006.09952
+
+    Args:
+    x: `tf.Tensor`. Inputs to the rounding function.
+    alpha: Float or `tf.Tensor`. Controls smoothness of the approximation.
+    eps: Float. Threshold below which `soft_round` will return identity.
+
+    Returns:
+    `tf.Tensor`
+    """
+    # This guards the gradient of tf.where below against NaNs, while maintaining
+    # correctness, as for alpha < eps the result is ignored.
+    alpha = torch.tensor(alpha)
+    eps = torch.tensor(eps)
+    alpha_bounded = torch.max(alpha, eps)
+
+    m = torch.floor(x) + .5
+    r = x - m
+    z = torch.tanh(alpha_bounded / 2.) * 2.
+    y = m + torch.tanh(alpha_bounded * r) / z
+
+    # For very low alphas, soft_round behaves like identity
+    return torch.where(alpha < eps, x, y)
+
+def print_num_nan(v, name="tensor"):
+    num_nan = v.isnan().sum()
+    if num_nan > 0:
+        print(f"{name} has {num_nan} nans")
 
 
 def round_ste(x: torch.Tensor):
@@ -41,14 +78,15 @@ class UniformAffineQuantizer(nn.Module):
         super().__init__()
         self.symmetric = symmetric
         self.disable_zero_point = disable_zero_point
-        assert 2 <= n_bits <= 16, "bitwidth not supported"
-        self.n_bits = n_bits
-        if self.disable_zero_point:
-            self.qmin = -(2 ** (n_bits - 1))
-            self.qmax = 2 ** (n_bits - 1) - 1
-        else:
-            self.qmin = 0
-            self.qmax = 2 ** (n_bits) - 1
+        # assert 2 <= n_bits <= 16, "bitwidth not supported"
+        # self.n_bits = 100
+        # print("n_bits", n_bits, flush=True)
+        # if self.disable_zero_point:
+        #     self.qmin = -(2 ** (n_bits - 1))
+        #     self.qmax = 2 ** (n_bits - 1) - 1
+        # else:
+        #     self.qmin = torch.zeros_like(n_bits)
+        #     self.qmax = 2 ** (n_bits) - 1
         self.per_channel_axes = per_channel_axes
         self.metric = metric
         self.cluster_counts = None
@@ -82,13 +120,16 @@ class UniformAffineQuantizer(nn.Module):
         self.enable = True
         self.group_size = group_size
 
+    def set_quant_params(self, quant_params):
+        self.change_n_bits(quant_params['n_bits'])
+
     def change_n_bits(self, n_bits):
         self.n_bits = n_bits
         if self.disable_zero_point:
             self.qmin = -(2 ** (n_bits - 1))
             self.qmax = 2 ** (n_bits - 1) - 1
         else:
-            self.qmin = 0
+            self.qmin = torch.zeros_like(n_bits)
             self.qmax = 2 ** (n_bits) - 1
 
     def fake_quant(self, x, scale, round_zero_point):
@@ -100,10 +141,16 @@ class UniformAffineQuantizer(nn.Module):
             assert len(x.shape)==2, "only support linear layer now"
             dim1, dim2 = x.shape
             x = x.reshape(-1, self.group_size)
-        x_int = round_ste(x / scale)
+
+        # scale.register_hook(print_num_nan)
+        div = x / scale
+        # div.register_hook(print_num_nan)
+        # print("self.training", self.training, flush=True)
+        x_int = round_ste(div)
+        # x_int = soft_round(div, alpha=.5)
         if round_zero_point is not None:
             x_int = x_int.add(round_zero_point)
-        x_int = x_int.clamp(self.qmin, self.qmax)
+        x_int = x_int.clamp(self.qmin.to(x_int.device), self.qmax.to(x_int.device))
         x_dequant = x_int
         if round_zero_point is not None:
             x_dequant = x_dequant.sub(round_zero_point)
