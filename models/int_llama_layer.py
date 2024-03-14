@@ -41,6 +41,11 @@ class QuantLlamaMLP(nn.Module):
                                            args.act_quant_params)
         self.act_fn = ACT2FN[hidden_act]
 
+    def set_quant_params(self, weight_quant_params, act_quant_params):
+        self.gate_proj.set_quant_params(weight_quant_params, act_quant_params)
+        self.down_proj.set_quant_params(weight_quant_params, act_quant_params)
+        self.up_proj.set_quant_params(weight_quant_params, act_quant_params)
+
     def forward(self, x):
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
@@ -96,6 +101,14 @@ class QuantLlamaAttention(nn.Module):
 
         self.use_weight_quant = False
         self.use_act_quant = False
+
+    def set_quant_params(self, weight_quant_params, act_quant_params, q_quant_params, k_quant_params, p_quant_params, v_quant_params):
+        self.k_proj.set_quant_params(weight_quant_params, act_quant_params)
+        self.v_proj.set_quant_params(weight_quant_params, act_quant_params)
+        self.q_proj.set_quant_params(weight_quant_params, act_quant_params)
+        self.o_proj.set_quant_params(weight_quant_params, act_quant_params)
+        self.qkt_matmul.set_quant_params(q_quant_params, k_quant_params)
+        self.pv_matmul.set_quant_params(p_quant_params, v_quant_params)
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -209,6 +222,10 @@ class QuantLlamaDecoderLayer(nn.Module):
         )
         self.input_layernorm = OmniLlamaRMSNorm(ori_layer.input_layernorm,eps=ori_layer.input_layernorm.variance_epsilon)
         self.post_attention_layernorm = OmniLlamaRMSNorm(ori_layer.post_attention_layernorm,eps=ori_layer.post_attention_layernorm.variance_epsilon)
+
+    def set_quant_params(self, weight_quant_params, act_quant_params, q_quant_params, k_quant_params, p_quant_params, v_quant_params):
+        self.self_attn.set_quant_params(weight_quant_params, act_quant_params, q_quant_params, k_quant_params, p_quant_params, v_quant_params)
+        self.mlp.set_quant_params(weight_quant_params, act_quant_params)
 
     def forward(
         self,

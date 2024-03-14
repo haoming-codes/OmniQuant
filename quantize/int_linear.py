@@ -43,7 +43,10 @@ class QuantLinear(nn.Module):
         self.disable_input_quant = disable_input_quant
         self.use_temporary_parameter = False
 
-    
+    def set_quant_params(self, weight_quant_params, act_quant_params):
+        self.weight_quantizer.set_quant_params(weight_quant_params)
+        if self.act_quantizer:
+            self.act_quantizer.set_quant_params(act_quant_params)    
     
     def forward(self, input: torch.Tensor):
         if self.use_temporary_parameter:

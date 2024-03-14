@@ -7,7 +7,7 @@ from quantize.int_linear import QuantLinear
 from contextlib import nullcontext
 import copy
 import math
-import utils
+from .. import utils
 import os
 import pdb
 import gc
@@ -255,6 +255,13 @@ def omniquant(
                     index = j * args.batch_size
                     # obtain output of quantization model
                     with traincast():
+                        qlayer.set_quant_params(
+                            args.weight_quant_params, 
+                            args.act_quant_params,
+                            args.q_quant_params, 
+                            args.k_quant_params, 
+                            args.p_quant_params, 
+                            args.v_quant_params)
                         smooth_and_quant_temporary(qlayer, args, is_llama)
                         quant_out = qlayer(quant_inps[index:index+args.batch_size,], attention_mask=attention_mask_batch,position_ids=position_ids)[0]
                         loss = loss_func(fp_inps[index:index+args.batch_size,], quant_out)
