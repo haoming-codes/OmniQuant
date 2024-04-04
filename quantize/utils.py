@@ -60,6 +60,9 @@ def truncate_number(number, threshold=1e-2):
     return TruncateFunction.apply(number, threshold)     
 
 def smooth_and_quant_temporary(model, args, isllama):
+    # size_all_mb = torch.cuda.memory_allocated() / 1024**2
+    # print(f"smooth_and_quant_temporary", '[{:.3f}MB]'.format(size_all_mb))
+                
     if args.let:
         with torch.no_grad():
             for name, module in model.named_parameters():
@@ -88,16 +91,28 @@ def smooth_and_quant_temporary(model, args, isllama):
     else:
         for name, module in model.named_modules():
             if isinstance(module, QuantLinear):
+                # size_all_mb = torch.cuda.memory_allocated() / 1024**2
+                # print(f"module.temp_weight = module.weight", '[{:.3f}MB]'.format(size_all_mb), flush=True)
+    
                 module.temp_weight = module.weight
+                # module.register_buffer('temp_weight', temp_weight)
+                if torch.is_tensor(module.weight): module.weight = module.weight.cpu()
+                
     # quant
     for name, module in model.named_modules():
         if isinstance(module, QuantLinear):
             if hasattr(module, "temp_weight"):
+                # size_all_mb = torch.cuda.memory_allocated() / 1024**2
+                # print(f"module.weight_quantizer(module.temp_weight)", '[{:.3f}MB]'.format(size_all_mb), flush=True)
                 module.temp_weight = module.weight_quantizer(module.temp_weight)
             else:
+                # size_all_mb = torch.cuda.memory_allocated() / 1024**2
+                # print(f"module.weight_quantizer(module.weight)", '[{:.3f}MB]'.format(size_all_mb), flush=True)
                 module.temp_weight = module.weight_quantizer(module.weight)
             if not hasattr(module, "temp_bias"):
                 module.temp_bias = module.bias
+                # module.register_buffer('temp_bias', temp_bias)
+                if torch.is_tensor(module.bias): module.bias = module.bias.cpu()
             module.use_temporary_parameter=True
             
 def clear_temp_variable(model):

@@ -20,7 +20,9 @@ try:
 except:
     print("auto_gptq is required for real quantization")
 
-
+def count_parameters(model, type="parameters", requires_grad=False):
+    return sum((p[1] if isinstance(p, tuple) else p).numel() 
+               for p in eval(f"model.{type}")() if ((p[1] if isinstance(p, tuple) else p).requires_grad if requires_grad else True))
 
 def get_named_linears(module):
     return {name: m for name, m in module.named_modules() if isinstance(m, QuantLinear)}
@@ -192,6 +194,14 @@ def omniquant(
     for i in range(len(layers)):
         logger.info(f"=== Start quantize layer {i} ===")
         layer = layers[i].to(dev)
+        # print("layer parameters", count_parameters(layer, "parameters"), flush=True)
+        # print("layer named_parameters", count_parameters(layer, "named_parameters"), flush=True)
+        # print("layer buffers", count_parameters(layer, "buffers"), flush=True)
+        # print("layer named_buffers", count_parameters(layer, "named_buffers"), flush=True)
+        # print("layer parameters, requires_grad", count_parameters(layer, "parameters", True), flush=True)
+        # print("layer named_parameters, requires_grad", count_parameters(layer, "named_parameters", True), flush=True)
+        # print("layer buffers, requires_grad", count_parameters(layer, "buffers", True), flush=True)
+        # print("layer named_buffers, requires_grad", count_parameters(layer, "named_buffers", True), flush=True)
         if "mixtral" in args.net.lower():  
             # for mixtral, we only leverage lwc, which can be achieve by simply replace Linear with QuantLinear
             qlayer = copy.deepcopy(layer)
@@ -201,8 +211,24 @@ def omniquant(
                     add_new_module(name, qlayer, quantlinear)    
         else:
             qlayer = DecoderLayer(lm.model.config, layer, args)
+        # qlayer.register_quant_params()
+        qlayer.set_quant_params(
+            args.quant_params[i].weight_quant_params, 
+            args.quant_params[i].act_quant_params,
+            args.quant_params[i].q_quant_params, 
+            args.quant_params[i].k_quant_params, 
+            args.quant_params[i].p_quant_params, 
+            args.quant_params[i].v_quant_params)
         qlayer = qlayer.to(dev)
-
+        # print("qlayer parameters", count_parameters(qlayer, "parameters"), flush=True)
+        # print("qlayer named_parameters", count_parameters(qlayer, "named_parameters"), flush=True)
+        # print("qlayer buffers", count_parameters(qlayer, "buffers"), flush=True)
+        # print("qlayer named_buffers", count_parameters(qlayer, "named_buffers"), flush=True)
+        # print("qlayer parameters, requires_grad", count_parameters(qlayer, "parameters", True), flush=True)
+        # print("qlayer named_parameters, requires_grad", count_parameters(qlayer, "named_parameters", True), flush=True)
+        # print("qlayer buffers, requires_grad", count_parameters(qlayer, "buffers", True), flush=True)
+        # print("qlayer named_buffers, requires_grad", count_parameters(qlayer, "named_buffers", True), flush=True)
+        
         
         # obtain output of full-precision model
         set_quant_state(qlayer, weight_quant=False, act_quant=False)
@@ -238,7 +264,6 @@ def omniquant(
                                 
         if args.resume:
             qlayer.load_state_dict(omni_parameters[i], strict=False)
-        
 
         if args.epochs > 0:
             with torch.no_grad():
@@ -255,13 +280,6 @@ def omniquant(
                     index = j * args.batch_size
                     # obtain output of quantization model
                     with traincast():
-                        qlayer.set_quant_params(
-                            args.weight_quant_params, 
-                            args.act_quant_params,
-                            args.q_quant_params, 
-                            args.k_quant_params, 
-                            args.p_quant_params, 
-                            args.v_quant_params)
                         smooth_and_quant_temporary(qlayer, args, is_llama)
                         quant_out = qlayer(quant_inps[index:index+args.batch_size,], attention_mask=attention_mask_batch,position_ids=position_ids)[0]
                         loss = loss_func(fp_inps[index:index+args.batch_size,], quant_out)
@@ -318,6 +336,8 @@ def omniquant(
                 del module        
         del layer
         torch.cuda.empty_cache()
+        
+        
 
     del inps
     del quant_inps
@@ -326,5 +346,6 @@ def omniquant(
     torch.cuda.empty_cache()
     gc.collect()                    
     model.config.use_cache = use_cache
+        
     return model
 

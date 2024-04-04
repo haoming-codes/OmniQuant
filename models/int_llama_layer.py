@@ -223,6 +223,10 @@ class QuantLlamaDecoderLayer(nn.Module):
         self.input_layernorm = OmniLlamaRMSNorm(ori_layer.input_layernorm,eps=ori_layer.input_layernorm.variance_epsilon)
         self.post_attention_layernorm = OmniLlamaRMSNorm(ori_layer.post_attention_layernorm,eps=ori_layer.post_attention_layernorm.variance_epsilon)
 
+        self.org_n_parameters = sum(p.numel() for p in ori_layer.parameters())
+        self.org_n_buffers = sum(p.numel() for p in ori_layer.buffers())
+
+
     def set_quant_params(self, weight_quant_params, act_quant_params, q_quant_params, k_quant_params, p_quant_params, v_quant_params):
         self.self_attn.set_quant_params(weight_quant_params, act_quant_params, q_quant_params, k_quant_params, p_quant_params, v_quant_params)
         self.mlp.set_quant_params(weight_quant_params, act_quant_params)

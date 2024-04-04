@@ -46,7 +46,7 @@ def soft_round(x, alpha, eps=1e-3):
 def print_num_nan(v, name="tensor"):
     num_nan = v.isnan().sum()
     if num_nan > 0:
-        print(f"{name} has {num_nan} nans")
+        print(f"{name} has {num_nan} nans", flush=True)
 
 
 def round_ste(x: torch.Tensor):
@@ -70,12 +70,15 @@ class UniformAffineQuantizer(nn.Module):
         shape=None,
         lwc=False,
         disable_zero_point=False,
+        mode="n_bits"
     ):
         """
         support cluster quantize
         dynamic_method support per_token and per_cluster
         """
         super().__init__()
+        assert mode in ["n_bits", "scale"]
+        self.mode=mode
         self.symmetric = symmetric
         self.disable_zero_point = disable_zero_point
         # assert 2 <= n_bits <= 16, "bitwidth not supported"
@@ -121,16 +124,34 @@ class UniformAffineQuantizer(nn.Module):
         self.group_size = group_size
 
     def set_quant_params(self, quant_params):
-        self.change_n_bits(quant_params['n_bits'])
+        if self.mode == "n_bits":
+            self.change_n_bits(quant_params['n_bits'])
+        elif self.mode == "scale":
+            self.change_scale(quant_params['scale'])
 
     def change_n_bits(self, n_bits):
-        self.n_bits = n_bits
-        if self.disable_zero_point:
-            self.qmin = -(2 ** (n_bits - 1))
-            self.qmax = 2 ** (n_bits - 1) - 1
+        if 'n_bits' not in dict(self.named_buffers()).keys():
+            self.register_buffer('n_bits', n_bits)
         else:
-            self.qmin = torch.zeros_like(n_bits)
-            self.qmax = 2 ** (n_bits) - 1
+            self.n_bits = n_bits
+        if self.disable_zero_point:
+            self.qmin = -(torch.exp2(self.n_bits - 1))
+            self.qmax = torch.exp2(self.n_bits - 1) - 1
+        else:
+            self.qmin = torch.zeros_like(self.n_bits)
+            self.qmax = torch.exp2(self.n_bits) - 1
+
+    def change_scale(self, scale):
+        if 'scale' not in dict(self.named_buffers()).keys():
+            self.register_buffer('scale', scale)
+        else:
+            self.scale = scale
+        if self.disable_zero_point:
+            self.qmin = -(torch.exp2(self.n_bits - 1))
+            self.qmax = torch.exp2(self.n_bits - 1) - 1
+        else:
+            self.qmin = torch.zeros_like(self.n_bits)
+            self.qmax = torch.exp2(self.n_bits) - 1
 
     def fake_quant(self, x, scale, round_zero_point):
         if self.deficiency > 0:
@@ -143,11 +164,14 @@ class UniformAffineQuantizer(nn.Module):
             x = x.reshape(-1, self.group_size)
 
         # scale.register_hook(print_num_nan)
+        # print("num_zero(scale) =", (scale == 0.).sum().item(), flush=True)
         div = x / scale
+        # print(f"{div} = {x} / {scale}")
+        # print_num_nan(div, "div")
         # div.register_hook(print_num_nan)
         # print("self.training", self.training, flush=True)
-        x_int = round_ste(div)
-        # x_int = soft_round(div, alpha=.5)
+        # x_int = round_ste(div)
+        x_int = soft_round(div, alpha=.5)
         if round_zero_point is not None:
             x_int = x_int.add(round_zero_point)
         x_int = x_int.clamp(self.qmin.to(x_int.device), self.qmax.to(x_int.device))
@@ -166,7 +190,7 @@ class UniformAffineQuantizer(nn.Module):
         if self.n_bits >= 16 or not self.enable:
             return x
         if self.metric == "fix0to1":
-            return x.mul_(2**self.n_bits-1).round_().div_(2**self.n_bits-1)
+            return x.mul_(torch.exp2(self.n_bits)-1).round_().div_(torch.exp2(self.n_bits)-1)
 
         if self.dynamic_method == "per_token" or self.dynamic_method == "per_channel":
             self.per_token_dynamic_calibration(x)
@@ -190,16 +214,29 @@ class UniformAffineQuantizer(nn.Module):
         if self.lwc:
             xmax = self.sigmoid(self.upbound_factor)*xmax
             xmin = self.sigmoid(self.lowbound_factor)*xmin
-        if self.symmetric:
-            abs_max = torch.max(xmax.abs(),xmin.abs())
-            scale = abs_max / (2**(self.n_bits-1)-1)
-            self.scale = scale.clamp(min=CLIPMIN, max=1e4)
-            zero_point = (2**(self.n_bits-1)-1)*torch.ones_like(self.scale)
-        else:
-            range = xmax - xmin
-            scale = range / (2**self.n_bits-1)
-            self.scale = scale.clamp(min=CLIPMIN, max=1e4)
-            zero_point = -(xmin) / (self.scale)
+        if self.mode == "scale":
+            if self.symmetric:
+                abs_max = torch.max(xmax.abs(),xmin.abs())
+                self.scale = scale.clamp(min=CLIPMIN, max=1e4)
+                self.n_bits = torch.log2(abs_max/self.scale + 1) + 1
+                zero_point = (2**(self.n_bits-1)-1)*torch.ones_like(self.scale)
+            else:
+                range = xmax - xmin
+                self.scale = scale.clamp(min=CLIPMIN, max=1e4)
+                self.n_bits = torch.log2(range/self.scale + 1)
+                zero_point = -(xmin) / (self.scale)
+        elif self.mode == "n_bits":
+            if self.symmetric:
+                abs_max = torch.max(xmax.abs(),xmin.abs())
+                scale = abs_max / (torch.exp2(self.n_bits-1)-1)
+                self.scale = scale.clamp(min=CLIPMIN, max=1e4)
+                zero_point = (torch.exp2(self.n_bits-1)-1)*torch.ones_like(self.scale)
+            else:
+                range = xmax - xmin
+                scale = range / torch.exp2(self.n_bits-1)
+                self.scale = scale.clamp(min=CLIPMIN, max=1e4)
+                zero_point = -(xmin) / (self.scale)
+        
         if self.disable_zero_point:
             self.round_zero_point = None
         else:
