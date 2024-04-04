@@ -22,7 +22,6 @@ from quantize.int_linear import QuantLinear
 
 import pdb
 
-
 torch.backends.cudnn.benchmark = True
 
 net_choices = [
